@@ -1,1 +1,89 @@
+name: Verify RSS Feeds
 
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Run every 6 hours
+    - cron: '0 0 */7 * *'  # Run every 7 days for source updates
+  workflow_dispatch:  # Allow manual trigger
+  push:
+    paths:
+      - 'sources.yml'
+      - '.github/workflows/verify_feeds.yml'
+      - 'verify_feeds.py'
+      - 'requirements.txt'
+
+permissions:
+  contents: write  # Needed for pushing updates to VALID_SOURCES.md
+  pull-requests: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 1
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Verify feeds
+      run: python verify_feeds.py
+    
+    - name: Upload feed status
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: feed-status
+        path: |
+          feed_status.json
+          VALID_SOURCES.md
+    
+    - name: Update feed status badge
+      if: always()
+      run: |
+        STATUS=$(jq -r '.summary.working' feed_status.json)
+        TOTAL=$(jq -r '.summary.total' feed_status.json)
+        echo "![Feed Status](https://img.shields.io/badge/Feeds-$STATUS%2F$TOTAL-${STATUS:-0})" > status_badge.md
+    
+    - name: Commit and push if there are changes
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # Add all changed files
+        git add status_badge.md VALID_SOURCES.md last_source_update.txt feed_status.json
+        
+        # Try to commit and push changes
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update feed status and valid sources [skip ci]"
+          git push
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify:
+    needs: verify
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Create Issue on Failure
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const issue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: 'RSS Feed Validation Failed',
+            body: `Feed validation failed on ${new Date().toISOString()}\n\nPlease check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`
+          });
