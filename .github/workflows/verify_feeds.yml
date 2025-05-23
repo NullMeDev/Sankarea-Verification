@@ -13,17 +13,17 @@ on:
       - 'requirements.txt'
 
 permissions:
-  contents: write  # Needed for pushing updates to VALID_SOURCES.md
+  contents: write
   pull-requests: read
+  issues: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 1
+    - name: Checkout repository
+      uses: actions/checkout@v4
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -38,52 +38,66 @@ jobs:
     - name: Verify feeds
       run: python verify_feeds.py
     
-    - name: Upload feed status
-      if: always()
-      uses: actions/upload-artifact@v3
+    - name: Create artifacts directory
+      run: mkdir -p artifacts
+    
+    - name: Copy files to artifacts
+      run: |
+        cp feed_status.json artifacts/
+        cp VALID_SOURCES.md artifacts/ || true
+        cp status_badge.md artifacts/ || true
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
       with:
-        name: feed-status
-        path: |
-          feed_status.json
-          VALID_SOURCES.md
+        name: feed-validation-results
+        path: artifacts/
+        if-no-files-found: warn
     
     - name: Update feed status badge
-      if: always()
+      if: success()
       run: |
-        STATUS=$(jq -r '.summary.working' feed_status.json)
-        TOTAL=$(jq -r '.summary.total' feed_status.json)
-        echo "![Feed Status](https://img.shields.io/badge/Feeds-$STATUS%2F$TOTAL-${STATUS:-0})" > status_badge.md
+        if [ -f feed_status.json ]; then
+          STATUS=$(jq -r '.summary.working' feed_status.json)
+          TOTAL=$(jq -r '.summary.total' feed_status.json)
+          echo "![Feed Status](https://img.shields.io/badge/Feeds-$STATUS%2F$TOTAL-${STATUS:-0})" > status_badge.md
+        fi
     
-    - name: Commit and push if there are changes
+    - name: Commit and push changes
+      if: success()
       run: |
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # Add all changed files
-        git add status_badge.md VALID_SOURCES.md last_source_update.txt feed_status.json
+        # Add changes
+        git add status_badge.md VALID_SOURCES.md last_source_update.txt feed_status.json || true
         
-        # Try to commit and push changes
+        # Commit if there are changes
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else
           git commit -m "Update feed status and valid sources [skip ci]"
           git push
         fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  notify:
+  notify-failure:
     needs: verify
     if: failure()
     runs-on: ubuntu-latest
     steps:
-    - name: Create Issue on Failure
+    - name: Create Issue
       uses: actions/github-script@v6
       with:
         script: |
-          const issue = await github.rest.issues.create({
+          await github.rest.issues.create({
             owner: context.repo.owner,
             repo: context.repo.repo,
-            title: 'RSS Feed Validation Failed',
-            body: `Feed validation failed on ${new Date().toISOString()}\n\nPlease check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`
+            title: '❌ RSS Feed Validation Failed',
+            body: `Feed validation failed at ${new Date().toISOString()}
+            
+            ### Details
+            - Workflow Run: [View Details](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            - Triggered by: ${context.eventName}
+            
+            Please check the workflow logs for more information.`
           });
