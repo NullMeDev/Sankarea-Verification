@@ -7,7 +7,7 @@ on:
   workflow_dispatch:  # Allow manual trigger
   push:
     paths:
-      - 'sources.yml'
+      - 'config/sources.yml'
       - '.github/workflows/verify_feeds.yml'
       - 'verify_feeds.py'
       - 'requirements.txt'
@@ -35,17 +35,22 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Verify feeds
-      run: python verify_feeds.py
-    
-    - name: Create artifacts directory
-      run: mkdir -p artifacts
-    
-    - name: Copy files to artifacts
+    - name: Create validation directory
       run: |
-        cp feed_status.json artifacts/
-        cp VALID_SOURCES.md artifacts/ || true
-        cp status_badge.md artifacts/ || true
+        mkdir -p validation
+        cp config/sources.yml validation/
+        cd validation
+    
+    - name: Verify feeds
+      working-directory: validation
+      run: python ../verify_feeds.py
+    
+    - name: Copy results back
+      run: |
+        mkdir -p artifacts
+        cp validation/feed_status.json artifacts/
+        cp validation/VALID_SOURCES.md artifacts/ || true
+        cp validation/status_badge.md artifacts/ || true
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -57,9 +62,9 @@ jobs:
     - name: Update feed status badge
       if: success()
       run: |
-        if [ -f feed_status.json ]; then
-          STATUS=$(jq -r '.summary.working' feed_status.json)
-          TOTAL=$(jq -r '.summary.total' feed_status.json)
+        if [ -f validation/feed_status.json ]; then
+          STATUS=$(jq -r '.summary.working' validation/feed_status.json)
+          TOTAL=$(jq -r '.summary.total' validation/feed_status.json)
           echo "![Feed Status](https://img.shields.io/badge/Feeds-$STATUS%2F$TOTAL-${STATUS:-0})" > status_badge.md
         fi
     
@@ -69,8 +74,13 @@ jobs:
         git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
+        # Move files to their final locations
+        cp validation/VALID_SOURCES.md ./
+        cp validation/status_badge.md ./
+        cp validation/feed_status.json ./
+        
         # Add changes
-        git add status_badge.md VALID_SOURCES.md last_source_update.txt feed_status.json || true
+        git add status_badge.md VALID_SOURCES.md feed_status.json || true
         
         # Commit if there are changes
         if git diff --staged --quiet; then
